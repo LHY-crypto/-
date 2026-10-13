@@ -1,0 +1,4 @@
+pywebview==6.2.1
+playwright==1.61.0
+APScheduler==3.11.3
+
