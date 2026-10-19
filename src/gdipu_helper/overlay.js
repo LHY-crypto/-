@@ -387,6 +387,7 @@
     </div><table><thead><tr><th>活动</th><th>活动时间</th><th>报名时间</th><th>名额</th><th>地点</th><th>操作</th></tr></thead><tbody></tbody></table>`;
     panel.style.display = 'block';
     renderRows(panel, initial);
+    panel.querySelector('.close').onclick = () => { panel.style.display = 'none'; };
 
     const input = panel.querySelector('#gdipu-search');
     const progress = panel.querySelector('#gdipu-signup-progress');
