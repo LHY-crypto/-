@@ -201,6 +201,14 @@
     return 1;
   };
 
+  // 门户分页器上的「共 N 条」是服务端返回的总数,可能和实际渲染出来的卡片数不一致。
+  // 实测 2026-10-19:未开始显示「共 72 条」,但六页加起来只有 71 张卡(第 4 页少一张)。
+  // 把两个数都摆出来,免得把学校的口径差当成读取漏项。
+  const pagerAuthoritativeTotal = () => {
+    const el = document.querySelector('.el-pagination__total');
+    return el ? clean(el.innerText) : '';
+  };
+
   // 全量扫描:5 种类型 × 4 种状态,把所有分页都走一遍。
   // 门户自带的搜索框只覆盖「进行中」,搜不到未开始的活动,所以只能自己扫。
   const scanEverything = async onProgress => {
@@ -245,7 +253,11 @@
       const next = pageButton(pageNumber + 1);
       if (!next) break;
       status(`正在读取第 ${pageNumber + 1} 页…`);
-      next.click(); await wait(1200);
+      next.click(); await wait(1400);
+    }
+    const authoritative = pagerAuthoritativeTotal();
+    if (authoritative && rows.length !== Number(authoritative.replace(/\D/g, ''))) {
+      status(`读取完成 ${rows.length} 项。门户口径「${authoritative}」—— 页面实际渲染的卡片数可能少于服务端总数,这是学校页面自己的差异。`);
     }
     return rows;
   };
@@ -475,7 +487,15 @@
   document.getElementById('gdipu-read').onclick = async () => {
     status('正在切换到“未开始”并读取活动…');
     const rows = await collectAllPages();
-    status(rows.length ? `找到 ${rows.length} 项可预约活动。` : '未找到可预约活动，请确认处于“活动基地”的“未开始”列表。');
+    const authoritative = pagerAuthoritativeTotal();
+    const declared = Number(authoritative.replace(/\D/g, '')) || 0;
+    if (!rows.length) {
+      status('未找到可预约活动,请确认处于“活动基地”的“未开始”列表。');
+    } else if (declared && declared !== rows.length) {
+      status(`读到 ${rows.length} 项;门户口径「${authoritative}」。页面实际渲染的卡片数少于服务端总数,这是学校页面的差异,不是漏读。`);
+    } else {
+      status(`找到 ${rows.length} 项可预约活动。`);
+    }
     show(rows);
   };
   window.addEventListener('pywebviewready', () => { resumePending(); refreshTasks(); });
