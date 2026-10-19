@@ -262,7 +262,7 @@
     return rows;
   };
 
-  const findCard = row => {
+  const findCardOnCurrentPage = row => {
     const list = cardListRoot();
     if (!list) return null;
     return [...list.querySelectorAll('.container.card-list-item')].find(card => {
@@ -272,19 +272,57 @@
     }) || null;
   };
 
+  const findCard = row => findCardOnCurrentPage(row);
+
+  // 点击入口因卡片类型而异,逐个实测过(2026-10-19):
+  //   ul.d-list > li.d-list-item  → .d-action (点卡片/标题/描述都不跳)
+  //   .container.card-list-item   → .a-name   (点 .a-action 会跳到首页!)
+  // 所以先按卡片所在的容器判断,再退化成按选择器顺序试。
+  const clickCard = card => {
+    const inDList = !!card.closest('ul.d-list');
+    const order = inDList
+      ? ['.d-action', '.d-name', 'a[href]', 'button']
+      : ['.a-name', 'a[href]', 'button'];
+    const target = order.map(sel => card.querySelector(sel)).find(Boolean) || card;
+    target.click();
+  };
+
+  // 卡片不一定在当前页,甚至不在当前筛选组合下:
+  // 列表会随新活动插入而整体后移,全量扫描出来的行还可能来自别的筛选。
+  // 所以先在当前页找,再逐页找,最后切回它当初出现的筛选组合再找一次。
   const openActivity = async row => {
-    if (row.pageNumber > 1) {
-      const target = pageButton(row.pageNumber);
-      if (target && !/is-active|active/.test(target.className || '')) {
-        target.click(); await wait(1200);
+    let card = findCardOnCurrentPage(row);
+    if (card) { clickCard(card); await wait(600); return true; }
+
+    const pages = Math.min(pagerCount(), 12);
+    for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
+      const btn = pageButton(pageNumber);
+      if (!btn) continue;
+      if (!/is-active|active/.test(btn.className || '')) {
+        btn.click(); await wait(1200);
+      }
+      card = findCardOnCurrentPage(row);
+      if (card) { clickCard(card); await wait(600); return true; }
+    }
+
+    if (row.firstSeenAs) {
+      const [type, state] = row.firstSeenAs.split('/');
+      if (type && state) {
+        await clickTab(type);
+        await clickTab(state);
+        for (let pageNumber = 1; pageNumber <= Math.min(pagerCount(), 12); pageNumber += 1) {
+          const btn = pageButton(pageNumber);
+          if (!btn) continue;
+          if (!/is-active|active/.test(btn.className || '')) {
+            btn.click(); await wait(1200);
+          }
+          card = findCardOnCurrentPage(row);
+          if (card) { clickCard(card); await wait(600); return true; }
+        }
       }
     }
-    const card = findCard(row);
-    if (!card) return false;
-    const clickable = card.querySelector('a[href],button,[class*="action"]') || card;
-    clickable.click();
-    await wait(600);
-    return true;
+
+    return false;
   };
 
   // 报名时间只在详情页里。用隐藏 iframe 渲染一次再读文本,
