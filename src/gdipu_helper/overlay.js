@@ -189,6 +189,54 @@
 
   const chooseUnstarted = () => clickTab('未开始');
 
+  const TYPES = ['全部', '招聘会', '宣讲会', '学生活动', '社团活动'];
+  const STATES = ['全部', '进行中', '未开始', '已结束'];
+  const ALL_CACHE_KEY = 'gdipu-assist-all-cache-v1';
+
+  const pagerCount = () => {
+    for (const pager of document.querySelectorAll('.el-pager')) {
+      const section = pager.closest('.section') || pager.closest('.sec-con');
+      if (section?.querySelector('.card-list')) return pager.querySelectorAll('li').length || 1;
+    }
+    return 1;
+  };
+
+  // 全量扫描:5 种类型 × 4 种状态,把所有分页都走一遍。
+  // 门户自带的搜索框只覆盖「进行中」,搜不到未开始的活动,所以只能自己扫。
+  const scanEverything = async onProgress => {
+    const seen = new Map();
+    let combos = 0;
+    for (const type of TYPES) {
+      for (const state of STATES) {
+        combos += 1;
+        onProgress?.(`正在扫描 ${combos}/${TYPES.length * STATES.length}：${type} / ${state}`);
+        await clickTab(type);
+        await clickTab(state);
+        const pages = Math.min(pagerCount(), 12);
+        for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
+          if (pageNumber > 1) {
+            const btn = pageButton(pageNumber);
+            if (!btn) break;
+            btn.click(); await wait(1500);
+          }
+          const list = cardListRoot();
+          if (!list) break;
+          for (const card of list.querySelectorAll('.container.card-list-item')) {
+            const row = activityFromCard(card, pageNumber);
+            if (!row.title) continue;
+            if (!seen.has(row.activityId)) {
+              row.firstSeenAs = `${type}/${state}`;
+              seen.set(row.activityId, row);
+            }
+          }
+        }
+      }
+    }
+    const all = [...seen.values()];
+    try { sessionStorage.setItem(ALL_CACHE_KEY, '1'); } catch (_) {}
+    return all;
+  };
+
   const collectAllPages = async () => {
     await chooseUnstarted();
     const rows = [], seen = new Set();
@@ -258,26 +306,76 @@
     document.body.appendChild(frame);
   });
 
+  // 全量扫描结果留在内存里,搜索时不再重新扫。
+  let allActivities = null;
+  let currentRows = [];
+
+  const renderRows = (panel, rows) => {
+    currentRows = rows;
+    const body = panel.querySelector('tbody');
+    body.innerHTML = rows.map((row, index) =>
+      `<tr data-i="${index}"><td><strong>${escapeHtml(row.title)}</strong>${row.firstSeenAs ? `<br><span class="tiny">${escapeHtml(row.firstSeenAs)}</span>` : ''}</td><td>${escapeHtml(row.time || '—')}</td><td class="signup">${escapeHtml(row.signupTime || '—')}</td><td>${escapeHtml(row.count === '' ? '—' : row.count)}</td><td>${escapeHtml(row.location || '—')}</td><td><button class="assist" data-index="${index}">帮抢</button></td></tr>`
+    ).join('') || '<tr><td colspan="6">没有匹配的活动。</td></tr>';
+    body.querySelectorAll('.assist').forEach(button => {
+      button.onclick = () => prepare(currentRows[Number(button.dataset.index)]);
+    });
+  };
+
   const show = rows => {
     const panel = document.getElementById('gdipu-assist-results');
-    panel.innerHTML = `<div class="head"><button class="close">关闭</button><h2>可预约活动 ${rows.length} 项</h2><p class="tiny">来源:「活动基地」下方受筛选影响的列表。右键「未开始」。<br>报名时间只在详情页里,点「读取本页报名时间」会用隐藏页面逐个读取(每项约 2 秒)。</p><p class="tiny" id="gdipu-signup-progress"></p><button id="gdipu-read-signup">读取本页报名时间</button></div><table><thead><tr><th>活动</th><th>活动时间</th><th>报名时间</th><th>名额</th><th>地点</th><th>操作</th></tr></thead><tbody>${rows.map((row,index)=>`<tr data-i="${index}"><td><strong>${escapeHtml(row.title)}</strong></td><td>${escapeHtml(row.time || '—')}</td><td class="signup">${escapeHtml(row.signupTime || '—')}</td><td>${escapeHtml(row.count === '' ? '—' : row.count)}</td><td>${escapeHtml(row.location || '—')}</td><td><button class="assist" data-index="${index}">帮抢</button></td></tr>`).join('')}</tbody></table>`;
+    const initial = allActivities || rows;
+    panel.innerHTML = `<div class="head">
+      <button class="close">关闭</button>
+      <h2>活动列表 <span id="gdipu-total">${initial.length}</span> 项</h2>
+      <p class="tiny">「读取可预约活动」只读「未开始」那一档。要跨类型、跨状态找活动,用下面的搜索 —— 它会全量扫一遍(约 1-2 分钟),之后搜索是本地的,秒出。</p>
+      <div style="display:flex;gap:8px;margin:10px 0;align-items:center;flex-wrap:wrap">
+        <input id="gdipu-search" placeholder="搜活动名称/单位/地点…" style="flex:1;min-width:220px;padding:8px;border-radius:8px;border:1px solid #cfdede">
+        <button id="gdipu-scan">全量扫描</button>
+        <button id="gdipu-read-signup">读取报名时间</button>
+      </div>
+      <p class="tiny" id="gdipu-signup-progress"></p>
+    </div><table><thead><tr><th>活动</th><th>活动时间</th><th>报名时间</th><th>名额</th><th>地点</th><th>操作</th></tr></thead><tbody></tbody></table>`;
     panel.style.display = 'block';
-    panel.querySelector('.close').onclick = () => panel.style.display = 'none';
-    panel.querySelectorAll('.assist').forEach(button => button.onclick = () => prepare(rows[Number(button.dataset.index)]));
+    renderRows(panel, initial);
 
+    const input = panel.querySelector('#gdipu-search');
     const progress = panel.querySelector('#gdipu-signup-progress');
+    const totalLabel = panel.querySelector('#gdipu-total');
+
+    const applyFilter = () => {
+      const keyword = clean(input.value).toLowerCase();
+      const source = allActivities || rows;
+      const matched = keyword
+        ? source.filter(row => [row.title, row.location, row.firstSeenAs, row.time]
+            .some(field => (field || '').toLowerCase().includes(keyword)))
+        : source;
+      totalLabel.textContent = `${matched.length} / ${source.length}`;
+      renderRows(panel, matched);
+    };
+    input.oninput = applyFilter;
+
+    panel.querySelector('#gdipu-scan').onclick = async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      allActivities = await scanEverything(text => { progress.textContent = text; });
+      progress.textContent = `扫描完成,共 ${allActivities.length} 项。`;
+      input.value = '';
+      applyFilter();
+      button.disabled = false;
+    };
+
     panel.querySelector('#gdipu-read-signup').onclick = async event => {
       const button = event.currentTarget;
       button.disabled = true;
-      const todo = rows.filter(row => row.wid && !row.signupTime);
+      const todo = currentRows.filter(row => row.wid && !row.signupTime);
       for (let i = 0; i < todo.length; i += 1) {
         const row = todo[i];
-        progress.textContent = `正在读取 ${i + 1}/${todo.length}：${row.title.slice(0, 20)}…`;
+        progress.textContent = `正在读取报名时间 ${i + 1}/${todo.length}：${row.title.slice(0, 20)}`;
         row.signupTime = await fetchSignupTime(row.wid, row.dataType);
-        const cell = panel.querySelector(`tr[data-i="${rows.indexOf(row)}"] .signup`);
+        const cell = panel.querySelector(`tr[data-i="${currentRows.indexOf(row)}"] .signup`);
         if (cell) cell.textContent = row.signupTime || '—';
       }
-      progress.textContent = todo.length ? `读取完成 ${todo.length} 项。` : '本页没有需要读取的项目。';
+      progress.textContent = todo.length ? `读取完成 ${todo.length} 项。` : '当前列表没有需要读取的项目。';
       button.disabled = false;
     };
   };
