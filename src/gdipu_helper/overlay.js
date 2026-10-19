@@ -97,110 +97,189 @@
   };
 
   // ── 真实页面结构(2026-10-19 实测)─────────────────────────────
-  // 「校官方活动预告」区块里是 ul.d-list > li.d-list-item,13 项,全部未开始:
-  //   <li class="d-list-item">
-  //     <div class="d-status status1">未开始</div>
-  //     <div class="d-time"><p>2026/10/20</p><p>14:30 - 16:30</p></div>
-  //     <div class="d-box"><div class="d-info">
-  //         <span class="d-user">特斯拉汽车销售服务（深圳）有限公司</span>
-  //         <span class="d-type d-type2">线下</span>
-  //         <div class="d-name">特斯拉2027届校园招聘宣讲会</div>
-  //         <div class="d-desc">…</div>
-  //         <span class="d-address__text">南海校区(北区)</span>
-  //         <div class="d-action">…</div>   ← 只有这个能点进详情
-  // 页面另外还有「大热门」区块的 .container.card-list-item(老活动),旧代码读的是它。
-  const listRoot = () => {
-    for (const section of document.querySelectorAll('.section, .sec-con')) {
-      const list = section.querySelector('ul.d-list');
-      if (!list) continue;
-      const header = clean(section.querySelector('.sec-header')?.innerText);
-      if (!header || /活动预告|未开始/.test(header)) return list;
+  // 活动广场有三个区块:
+  //   [0] 「校官方活动预告」 ul.d-list   13 项宣讲会,不受筛选项影响
+  //   [1] 「大热门」       .card-list   8 项老活动,不受筛选项影响
+  //   [2] (无标题)         .card-list   受「类型/状态」筛选影响,带 .el-pager 分页
+  //                                                      ↑ 要读这个
+  // 每张卡里挂了 Vue 组件, $props.model 就是活动对象:
+  //   { wid, dataType('HD'|'XJH'), seminarName/activityName,
+  //     startTime, endTime, countNum, activityAddr/addressName }
+  // 报名时间不在 model 里,只有详情页有,靠隐藏 iframe 读(见 fetchSignupTime)。
+  const cardListRoot = () => {
+    for (const pager of document.querySelectorAll('.el-pager')) {
+      const section = pager.closest('.section') || pager.closest('.sec-con');
+      const list = section?.querySelector('.card-list');
+      if (list) return list;
     }
-    return document.querySelector('ul.d-list');
+    return null;
+  };
+
+  const listRoot = () => cardListRoot();
+
+  const modelOf = card => {
+    let node = card, depth = 0;
+    while (node && depth < 15) {
+      const props = node.__vue__?.$props;
+      if (props && props.model && typeof props.model === 'object') return props.model;
+      node = node.parentElement; depth += 1;
+    }
+    return null;
   };
 
   const activityFromCard = (card, pageNumber) => {
-    const title = clean(card.querySelector('.d-name')?.innerText)
-      || clean(card.querySelector('h1,h2,h3,h4,h5,h6,[class*="title" i],[class*="name" i]')?.innerText);
-    const timeText = clean(card.querySelector('.d-time')?.innerText);
+    const model = modelOf(card);
+    const pick = (a, b) => clean(a || b || '');
+    const title = model ? pick(model.seminarName, model.activityName)
+      : clean(card.querySelector('.a-name')?.innerText);
+    const timeText = clean(card.querySelector('.a-time')?.innerText);
     const time = timeText.match(timePattern)?.[0] || timeText;
-    const status = clean(card.querySelector('.d-status')?.innerText);
-    const org = clean(card.querySelector('.d-user')?.innerText);
-    const type = clean(card.querySelector('.d-type')?.innerText);
-    const location = clean(card.querySelector('.d-address__text')?.innerText)
-      || clean(card.querySelector('.d-address')?.innerText);
-    const action = card.querySelector('.d-action');
-    const rawId = card.dataset?.id || card.getAttribute('data-activity-id')
-      || action?.getAttribute('data-id') || `${title}|${time}`;
+    const location = model ? pick(model.activityAddr, model.addressName)
+      : clean(card.querySelector('.a-address')?.innerText);
+    const dataType = model?.dataType || '';
+    const count = model && model.countNum !== undefined && model.countNum !== null ? String(model.countNum) : '';
+    const rawId = model?.wid || `${title}|${time}`;
     return {
-      activityId: hash(rawId), title, time, status, org, type, location,
-      pageNumber, hasAction: !!action,
+      activityId: hash(String(rawId)), wid: model?.wid ? String(model.wid) : '',
+      dataType, title, time, location, count,
+      status: '', signupTime: '', pageNumber,
+      hasAction: true,
     };
   };
 
   const collectCurrentPage = (pageNumber, rows, seen) => {
-    const list = listRoot();
+    const list = cardListRoot();
     if (!list) return;
-    const cards = [...list.querySelectorAll(':scope > li.d-list-item')]
+    const cards = [...list.querySelectorAll('.container.card-list-item')]
       .filter(card => card.offsetParent);
     for (const card of cards) {
-      if (/班级活动|报名已结束|活动已结束/.test(clean(card.innerText))) continue;
       const row = activityFromCard(card, pageNumber);
-      if (!row.title || !row.time || seen.has(row.activityId)) continue;
+      if (!row.title || seen.has(row.activityId)) continue;
       seen.add(row.activityId); rows.push(row);
     }
   };
 
-  // 「校官方活动预告」列表本身不分页,分页器属于下面另一个区块,这里不再翻页。
-  const pageButton = () => null;
+  const pageButton = pageNumber => {
+    for (const pager of document.querySelectorAll('.el-pager')) {
+      const section = pager.closest('.section') || pager.closest('.sec-con');
+      if (!section?.querySelector('.card-list')) continue;
+      const hit = [...pager.querySelectorAll('li')]
+        .find(li => li.offsetParent && clean(li.innerText) === String(pageNumber));
+      if (hit) return hit;
+    }
+    return null;
+  };
 
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-  // 筛选栏是 .tag-radio-item。页面上有两组:活动类型(全部/招聘会/宣讲会/…)
+  // 筛选栏是 .tag-radio-item,分两组:活动类型(全部/招聘会/宣讲会/学生活动/社团活动)
   // 和活动状态(全部/进行中/未开始/已结束)。旧代码在整棵树里按「子元素最少」
-  // 挑节点,会挑中卡片角标 .d-status,点了等于没点。这里只认 .tag-radio-item。
-  const chooseUnstarted = async () => {
+  // 挑节点,会挑中卡片角标,点了等于没点。这里只认 .tag-radio-item,且取最后一个匹配。
+  const clickTab = async text => {
     const items = [...document.querySelectorAll('.tag-radio-item')]
-      .filter(item => item.offsetParent && clean(item.innerText) === '未开始');
-    const target = items[items.length - 1] || items[0];
+      .filter(item => item.offsetParent && clean(item.innerText) === text);
+    const target = items[items.length - 1];
     if (!target) return false;
     if (!/is-active|active/.test(target.className || '')) {
       target.click();
-      await wait(1000);
+      await wait(1200);
     }
     return true;
   };
 
+  const chooseUnstarted = () => clickTab('未开始');
+
   const collectAllPages = async () => {
     await chooseUnstarted();
     const rows = [], seen = new Set();
-    collectCurrentPage(1, rows, seen);
+    for (let pageNumber = 1; pageNumber <= 20; pageNumber += 1) {
+      collectCurrentPage(pageNumber, rows, seen);
+      const next = pageButton(pageNumber + 1);
+      if (!next) break;
+      status(`正在读取第 ${pageNumber + 1} 页…`);
+      next.click(); await wait(1200);
+    }
     return rows;
   };
 
   const findCard = row => {
-    const list = listRoot();
+    const list = cardListRoot();
     if (!list) return null;
-    return [...list.querySelectorAll(':scope > li.d-list-item')]
-      .find(el => clean(el.querySelector('.d-name')?.innerText) === row.title) || null;
+    return [...list.querySelectorAll('.container.card-list-item')].find(card => {
+      const model = modelOf(card);
+      if (model?.wid && row.wid) return String(model.wid) === String(row.wid);
+      return clean(card.querySelector('.a-name')?.innerText) === row.title;
+    }) || null;
   };
 
   const openActivity = async row => {
+    if (row.pageNumber > 1) {
+      const target = pageButton(row.pageNumber);
+      if (target && !/is-active|active/.test(target.className || '')) {
+        target.click(); await wait(1200);
+      }
+    }
     const card = findCard(row);
     if (!card) return false;
-    // 整张卡没有 a/button/onclick,唯一能进详情的是 .d-action(实测有效)。
-    const action = card.querySelector('.d-action') || card.querySelector('.d-box') || card;
-    action.click();
+    const clickable = card.querySelector('a[href],button,[class*="action"]') || card;
+    clickable.click();
     await wait(600);
     return true;
   };
 
+  // 报名时间只在详情页里。用隐藏 iframe 渲染一次再读文本,
+  // 不调用任何接口、不离开列表页。
+  const SIGNUP_MARKER = /活动报名时间|报名时间/;
+  const fetchSignupTime = (wid, dataType) => new Promise(resolve => {
+    if (!wid) { resolve(''); return; }
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;left:-9999px;top:0;width:1200px;height:900px;border:0;';
+    frame.src = `/CloudPortal/CloudActivityDetail?wid=${encodeURIComponent(wid)}&dataType=${encodeURIComponent(dataType || 'HD')}`;
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      try { frame.remove(); } catch (_) {}
+      resolve(value);
+    };
+    frame.onload = () => setTimeout(() => {
+      let text = '';
+      try {
+        const doc = frame.contentDocument;
+        text = doc ? (doc.getElementById('app')?.innerText || doc.body.innerText || '') : '';
+      } catch (_) { text = ''; }
+      const hit = text.match(SIGNUP_MARKER);
+      if (!hit) { finish(''); return; }
+      const chunk = text.slice(hit.index, hit.index + 200);
+      const range = chunk.match(timePattern)?.[0] || '';
+      finish(range);
+    }, 2000);
+    setTimeout(() => finish(''), 15000);
+    document.body.appendChild(frame);
+  });
+
   const show = rows => {
     const panel = document.getElementById('gdipu-assist-results');
-    panel.innerHTML = `<div class="head"><button class="close">关闭</button><h2>可预约活动 ${rows.length} 项</h2><p class="tiny">以下为「校官方活动预告」里的未开始活动。宣讲会类详情页没有「报名时间」字段,只有举办时间与倒计时,帮抢会按详情页读到的第一个时间建立任务。</p></div><table><thead><tr><th>活动</th><th>举办时间</th><th>状态</th><th>单位</th><th>地点</th><th>操作</th></tr></thead><tbody>${rows.map((row,index)=>`<tr><td><strong>${escapeHtml(row.title)}</strong></td><td>${escapeHtml(row.time || '—')}</td><td>${escapeHtml(row.status || '—')}</td><td>${escapeHtml(row.org || '—')}</td><td>${escapeHtml(row.location || '—')}</td><td><button class="assist" data-index="${index}">${row.hasAction ? '帮抢' : '不可抢'}</button></td></tr>`).join('')}</tbody></table>`;
+    panel.innerHTML = `<div class="head"><button class="close">关闭</button><h2>可预约活动 ${rows.length} 项</h2><p class="tiny">来源:「活动基地」下方受筛选影响的列表。右键「未开始」。<br>报名时间只在详情页里,点「读取本页报名时间」会用隐藏页面逐个读取(每项约 2 秒)。</p><p class="tiny" id="gdipu-signup-progress"></p><button id="gdipu-read-signup">读取本页报名时间</button></div><table><thead><tr><th>活动</th><th>活动时间</th><th>报名时间</th><th>名额</th><th>地点</th><th>操作</th></tr></thead><tbody>${rows.map((row,index)=>`<tr data-i="${index}"><td><strong>${escapeHtml(row.title)}</strong></td><td>${escapeHtml(row.time || '—')}</td><td class="signup">${escapeHtml(row.signupTime || '—')}</td><td>${escapeHtml(row.count === '' ? '—' : row.count)}</td><td>${escapeHtml(row.location || '—')}</td><td><button class="assist" data-index="${index}">帮抢</button></td></tr>`).join('')}</tbody></table>`;
     panel.style.display = 'block';
     panel.querySelector('.close').onclick = () => panel.style.display = 'none';
     panel.querySelectorAll('.assist').forEach(button => button.onclick = () => prepare(rows[Number(button.dataset.index)]));
+
+    const progress = panel.querySelector('#gdipu-signup-progress');
+    panel.querySelector('#gdipu-read-signup').onclick = async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      const todo = rows.filter(row => row.wid && !row.signupTime);
+      for (let i = 0; i < todo.length; i += 1) {
+        const row = todo[i];
+        progress.textContent = `正在读取 ${i + 1}/${todo.length}：${row.title.slice(0, 20)}…`;
+        row.signupTime = await fetchSignupTime(row.wid, row.dataType);
+        const cell = panel.querySelector(`tr[data-i="${rows.indexOf(row)}"] .signup`);
+        if (cell) cell.textContent = row.signupTime || '—';
+      }
+      progress.textContent = todo.length ? `读取完成 ${todo.length} 项。` : '本页没有需要读取的项目。';
+      button.disabled = false;
+    };
   };
 
   const prepare = async row => {
