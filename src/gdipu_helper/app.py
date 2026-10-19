@@ -58,7 +58,17 @@ def choose_cdp_port() -> int:
 
 
 def configure_webview_network() -> None:
-    """Use a running local proxy when WebView2 cannot reach the school's CDN."""
+    """Point WebView2 at a running local proxy, but never for the school itself.
+
+    Measured on this machine (2026-10-19), with Clash Verge listening on 7897:
+        study.gdipu.edu.cn      direct 200 / 0.12s   via proxy 200 / 1.88s
+        zhxycdn.gdipu.edu.cn    direct 200 / 0.11s   via proxy TLS handshake FAILS
+
+    The earlier version set --proxy-server with no bypass, so every asset on the
+    school CDN went through the proxy, failed to load, and the window stayed
+    blank. The fix keeps the proxy (some networks need it) and sends the school
+    domains straight out, where they work.
+    """
     if os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"):
         return
     for port in (7897, 7890):
@@ -67,6 +77,9 @@ def configure_webview_network() -> None:
             if probe.connect_ex(("127.0.0.1", port)) == 0:
                 os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
                     f"--proxy-server=http://127.0.0.1:{port}"
+                    " --proxy-bypass-list="
+                    "*.gdipu.edu.cn;*.edu.cn;*.gzzhyc.cn;*.gdtzy.edu.cn;"
+                    "localhost;127.0.0.1"
                 )
                 return
 
