@@ -96,23 +96,53 @@
     return (result >>> 0).toString(16);
   };
 
+  // ── 真实页面结构(2026-10-19 实测)─────────────────────────────
+  // 「校官方活动预告」区块里是 ul.d-list > li.d-list-item,13 项,全部未开始:
+  //   <li class="d-list-item">
+  //     <div class="d-status status1">未开始</div>
+  //     <div class="d-time"><p>2026/10/20</p><p>14:30 - 16:30</p></div>
+  //     <div class="d-box"><div class="d-info">
+  //         <span class="d-user">特斯拉汽车销售服务（深圳）有限公司</span>
+  //         <span class="d-type d-type2">线下</span>
+  //         <div class="d-name">特斯拉2027届校园招聘宣讲会</div>
+  //         <div class="d-desc">…</div>
+  //         <span class="d-address__text">南海校区(北区)</span>
+  //         <div class="d-action">…</div>   ← 只有这个能点进详情
+  // 页面另外还有「大热门」区块的 .container.card-list-item(老活动),旧代码读的是它。
+  const listRoot = () => {
+    for (const section of document.querySelectorAll('.section, .sec-con')) {
+      const list = section.querySelector('ul.d-list');
+      if (!list) continue;
+      const header = clean(section.querySelector('.sec-header')?.innerText);
+      if (!header || /活动预告|未开始/.test(header)) return list;
+    }
+    return document.querySelector('ul.d-list');
+  };
+
   const activityFromCard = (card, pageNumber) => {
-    const lines = (card.innerText || '').split(/\n+/).map(clean).filter(Boolean);
-    const title = clean(card.querySelector('h1,h2,h3,h4,h5,h6,[class*="title" i],[class*="name" i]')?.innerText)
-      || lines.find(line => line !== '活动' && !timePattern.test(line) && line !== '线上' && line !== '线下') || '';
-    const time = lines.map(line => line.match(timePattern)?.[0]).filter(Boolean).pop() || '';
-    const anchor = card.matches('a[href]') ? card : card.querySelector('a[href]');
-    const href = anchor?.href || '';
-    const rawId = card.dataset?.id || card.getAttribute('data-activity-id') || anchor?.dataset?.id || href;
-    const locationLine = lines.find(line => /(校区|教学楼|教室|楼|馆|中心|基地|广场|操场|礼堂|会议室|线上问卷|直播)/.test(line));
-    return {activityId: rawId ? hash(rawId) : hash(`${title}|${time}`), title, time, location: clean(locationLine || ''), href, pageNumber};
+    const title = clean(card.querySelector('.d-name')?.innerText)
+      || clean(card.querySelector('h1,h2,h3,h4,h5,h6,[class*="title" i],[class*="name" i]')?.innerText);
+    const timeText = clean(card.querySelector('.d-time')?.innerText);
+    const time = timeText.match(timePattern)?.[0] || timeText;
+    const status = clean(card.querySelector('.d-status')?.innerText);
+    const org = clean(card.querySelector('.d-user')?.innerText);
+    const type = clean(card.querySelector('.d-type')?.innerText);
+    const location = clean(card.querySelector('.d-address__text')?.innerText)
+      || clean(card.querySelector('.d-address')?.innerText);
+    const action = card.querySelector('.d-action');
+    const rawId = card.dataset?.id || card.getAttribute('data-activity-id')
+      || action?.getAttribute('data-id') || `${title}|${time}`;
+    return {
+      activityId: hash(rawId), title, time, status, org, type, location,
+      pageNumber, hasAction: !!action,
+    };
   };
 
   const collectCurrentPage = (pageNumber, rows, seen) => {
-    const scope = activityBase();
-    if (!scope) return;
-    const cards = [...scope.root.querySelectorAll('.container.card-list-item')]
-      .filter(card => card.offsetParent && timePattern.test(clean(card.innerText)));
+    const list = listRoot();
+    if (!list) return;
+    const cards = [...list.querySelectorAll(':scope > li.d-list-item')]
+      .filter(card => card.offsetParent);
     for (const card of cards) {
       if (/班级活动|报名已结束|活动已结束/.test(clean(card.innerText))) continue;
       const row = activityFromCard(card, pageNumber);
@@ -121,73 +151,53 @@
     }
   };
 
-  const pageButton = pageNumber => {
-    const scope = activityBase();
-    if (!scope) return null;
-    return [...scope.root.querySelectorAll('li.number,button.number,a.number')]
-      .find(button => button.offsetParent && clean(button.innerText) === String(pageNumber)) || null;
-  };
+  // 「校官方活动预告」列表本身不分页,分页器属于下面另一个区块,这里不再翻页。
+  const pageButton = () => null;
 
   const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
+  // 筛选栏是 .tag-radio-item。页面上有两组:活动类型(全部/招聘会/宣讲会/…)
+  // 和活动状态(全部/进行中/未开始/已结束)。旧代码在整棵树里按「子元素最少」
+  // 挑节点,会挑中卡片角标 .d-status,点了等于没点。这里只认 .tag-radio-item。
   const chooseUnstarted = async () => {
-    const scope = activityBase();
-    if (!scope) return false;
-    const statusItems = [...scope.root.querySelectorAll('.tag-radio-item,[role="tab"],button,li,span,div')]
+    const items = [...document.querySelectorAll('.tag-radio-item')]
       .filter(item => item.offsetParent && clean(item.innerText) === '未开始');
-    statusItems.sort((a,b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
-    const target = statusItems[0];
+    const target = items[items.length - 1] || items[0];
     if (!target) return false;
-    if (!/(^|\s)active(\s|$)/.test(target.className || '')) {
+    if (!/is-active|active/.test(target.className || '')) {
       target.click();
-      await wait(800);
+      await wait(1000);
     }
     return true;
   };
 
   const collectAllPages = async () => {
-    if (!await chooseUnstarted()) return [];
+    await chooseUnstarted();
     const rows = [], seen = new Set();
-    const first = pageButton(1);
-    if (first && !/(^|\s)active(\s|$)/.test(first.className || '')) {
-      first.click(); await wait(700);
-    }
-    for (let pageNumber = 1; pageNumber <= 20; pageNumber += 1) {
-      collectCurrentPage(pageNumber, rows, seen);
-      const next = pageButton(pageNumber + 1);
-      if (!next || /disabled/.test(next.className || '')) break;
-      status(`正在读取未开始活动：第 ${pageNumber + 1} 页…`);
-      next.click(); await wait(700);
-    }
+    collectCurrentPage(1, rows, seen);
     return rows;
   };
 
   const findCard = row => {
-    const candidates = [];
-    const scope = activityBase();
-    if (!scope) return null;
-    for (const el of scope.root.querySelectorAll('.container.card-list-item')) {
-      if (el.offsetParent && clean(el.innerText).includes(row.title) && clean(el.innerText).includes(row.time.slice(0, 10))) candidates.push(el);
-    }
-    candidates.sort((a,b) => clean(a.innerText).length - clean(b.innerText).length);
-    return candidates[0] || null;
+    const list = listRoot();
+    if (!list) return null;
+    return [...list.querySelectorAll(':scope > li.d-list-item')]
+      .find(el => clean(el.querySelector('.d-name')?.innerText) === row.title) || null;
   };
 
   const openActivity = async row => {
-    const destination = pageButton(row.pageNumber || 1);
-    if (destination && !/(^|\s)active(\s|$)/.test(destination.className || '')) {
-      destination.click(); await wait(700);
-    }
     const card = findCard(row);
-    const target = card?.matches('a[href]') ? card : card?.querySelector('a[href],button') || card;
-    if (target) { target.click(); return true; }
-    if (row.href) { location.href = row.href; return true; }
-    return false;
+    if (!card) return false;
+    // 整张卡没有 a/button/onclick,唯一能进详情的是 .d-action(实测有效)。
+    const action = card.querySelector('.d-action') || card.querySelector('.d-box') || card;
+    action.click();
+    await wait(600);
+    return true;
   };
 
   const show = rows => {
     const panel = document.getElementById('gdipu-assist-results');
-    panel.innerHTML = `<div class="head"><button class="close">关闭</button><h2>可预约活动 ${rows.length} 项</h2></div><table><thead><tr><th>活动</th><th>时间</th><th>地点</th><th>操作</th></tr></thead><tbody>${rows.map((row,index)=>`<tr><td><strong>${escapeHtml(row.title)}</strong></td><td>${escapeHtml(row.time)}</td><td>${escapeHtml(row.location || '—')}</td><td><button class="assist" data-index="${index}">帮抢</button></td></tr>`).join('')}</tbody></table>`;
+    panel.innerHTML = `<div class="head"><button class="close">关闭</button><h2>可预约活动 ${rows.length} 项</h2><p class="tiny">以下为「校官方活动预告」里的未开始活动。宣讲会类详情页没有「报名时间」字段,只有举办时间与倒计时,帮抢会按详情页读到的第一个时间建立任务。</p></div><table><thead><tr><th>活动</th><th>举办时间</th><th>状态</th><th>单位</th><th>地点</th><th>操作</th></tr></thead><tbody>${rows.map((row,index)=>`<tr><td><strong>${escapeHtml(row.title)}</strong></td><td>${escapeHtml(row.time || '—')}</td><td>${escapeHtml(row.status || '—')}</td><td>${escapeHtml(row.org || '—')}</td><td>${escapeHtml(row.location || '—')}</td><td><button class="assist" data-index="${index}">${row.hasAction ? '帮抢' : '不可抢'}</button></td></tr>`).join('')}</tbody></table>`;
     panel.style.display = 'block';
     panel.querySelector('.close').onclick = () => panel.style.display = 'none';
     panel.querySelectorAll('.assist').forEach(button => button.onclick = () => prepare(rows[Number(button.dataset.index)]));
@@ -213,15 +223,32 @@
     return location.href;
   };
 
+  // 两种详情页(2026-10-19 实测):
+  //   学院活动 → 有「活动报名时间」字段: 2022/11/29 19:30 —— 2022/12/28 23:30
+  //   宣讲会   → 没有该字段,只有「举办时间 2026/10/20 14:30:00 —— 16:30:00」
+  //              和「剩余18:02:11 / 2026/10/20 14:30开始」
+  // 旧代码在找不到「报名时间」时会退化成整页取第一个时间,可能抓到正文里的日期。
+  // 这里先认报名时间,再认举办时间,并把来源一并返回,便于界面显示。
   const parseStart = text => {
+    let source = '';
+    let range = '';
     const marker = text.search(/活动报名时间|报名时间/);
-    const fragment = marker >= 0 ? text.slice(marker, marker + 220) : text;
-    const range = fragment.match(timePattern)?.[0] || '';
+    if (marker >= 0) {
+      range = text.slice(marker, marker + 220).match(timePattern)?.[0] || '';
+      if (range) source = '报名时间';
+    }
+    if (!range) {
+      const at = text.search(/举办时间/);
+      const near = at >= 0 ? text.slice(Math.max(0, at - 80), at + 160) : text;
+      const hit = near.match(timePattern)?.[0] || '';
+      if (hit) { range = hit; source = '举办时间'; }
+    }
+    if (!range) return null;
     const start = range.match(/20\d{2}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}/)?.[0] || '';
     if (!start) return null;
     const isoLocal = start.replace(/\//g, '-').replace(/^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}:\d{2})$/, (_,y,m,d,t)=>`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}T${t}`);
     const date = new Date(isoLocal);
-    return Number.isFinite(date.getTime()) ? {date, range} : null;
+    return Number.isFinite(date.getTime()) ? {date, range, source} : null;
   };
 
   let pendingAttempts = 0;
