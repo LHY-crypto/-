@@ -57,6 +57,20 @@ def choose_cdp_port() -> int:
     raise OSError("没有可用的本地 WebView2 调试端口")
 
 
+def configure_webview_network() -> None:
+    """Use a running local proxy when WebView2 cannot reach the school's CDN."""
+    if os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"):
+        return
+    for port in (7897, 7890):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.15)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+                    f"--proxy-server=http://127.0.0.1:{port}"
+                )
+                return
+
+
 class HelperApi:
     def __init__(self, store: TaskStore, cdp_port: int):
         self.store = store
@@ -190,6 +204,7 @@ class HelperApi:
 
 
 def main() -> None:
+    configure_webview_network()
     profile_dir = storage_dir()
     cdp_port = choose_cdp_port()
     webview.settings["REMOTE_DEBUGGING_PORT"] = cdp_port

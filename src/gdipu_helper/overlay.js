@@ -2,11 +2,24 @@
   if (document.getElementById('gdipu-assist-root')) return;
 
   const SCHOOL_URL = 'https://study.gdipu.edu.cn/CloudPortal/CloudSquare';
+  const pageRetryKey = 'gdipu-assist-page-retry-v5';
   const pendingKey = 'gdipu-assist-pending-v5';
   const accountKey = 'gdipu-assist-account-v5';
   const clean = value => (value || '').replace(/\s+/g, ' ').trim();
   const timePattern = /20\d{2}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}(?:\s*(?:至|[-—~])\s*(?:(?:20\d{2}[/-])?\d{1,2}[/-]\d{1,2}\s*)?\d{1,2}:\d{2})?/;
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  // The school's Vue application occasionally stays empty on the first cold
+  // load even though the document itself finished loading. Retry once so the
+  // login page is available instead of leaving a white window.
+  const siteRoot = document.getElementById('app');
+  const siteIsBlank = siteRoot && siteRoot.childElementCount === 0 && !clean(siteRoot.innerText);
+  if (siteIsBlank && sessionStorage.getItem(pageRetryKey) !== 'done') {
+    sessionStorage.setItem(pageRetryKey, 'done');
+    setTimeout(() => location.reload(), 500);
+    return;
+  }
+  if (!siteIsBlank) sessionStorage.removeItem(pageRetryKey);
 
   const root = document.createElement('div');
   root.id = 'gdipu-assist-root';
@@ -50,7 +63,10 @@
   accountInput.value = localStorage.getItem(accountKey) || '';
   accountInput.onchange = () => { localStorage.setItem(accountKey, accountInput.value.trim()); refreshTasks(); };
   document.getElementById('gdipu-assist-toggle').onclick = () => root.classList.toggle('collapsed');
-  document.getElementById('gdipu-open').onclick = () => location.href = SCHOOL_URL;
+  document.getElementById('gdipu-open').onclick = () => {
+    if (location.href === SCHOOL_URL) location.reload();
+    else location.href = SCHOOL_URL;
+  };
 
   const documents = () => {
     const docs = [document];

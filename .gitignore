@@ -23,3 +23,9 @@ Web Data
 *.sqlite3-shm
 *.sqlite3-wal
 
+
+# 打包产物:解压后的发行目录,和 dist/ 内容重复
+广轻活动汇总-Edge-v5.0-windows-x64/
+
+# 发布包不入库:压缩包是构建产物,入库会让 .git 无谓膨胀
+*.zip
