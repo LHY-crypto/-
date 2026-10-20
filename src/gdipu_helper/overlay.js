@@ -431,15 +431,76 @@
     };
   };
 
+  const RESTORE_KEY = 'gdipu-assist-restore-v1';
+  const RESULT_KEY = 'gdipu-assist-result-v1';
+  const SCHOOL_URL_VALUE = 'https://study.gdipu.edu.cn/CloudPortal/CloudSquare';
+
+  // 帮抢要跳到详情页读报名时间,读完再跳回列表 —— 跳回来时脚本是全新的一份,
+  // 内存里的列表已经没了。所以进详情前把列表快照存进 sessionStorage,
+  // 回列表后恢复面板,并把结果用显眼的横幅显示出来。
+  const rememberPanel = () => {
+    try {
+      const source = allActivities || currentRows;
+      sessionStorage.setItem(RESTORE_KEY, JSON.stringify({
+        rows: source.map(({ signupTime, ...rest }) => rest),
+        keyword: document.querySelector('#gdipu-search')?.value || '',
+        at: Date.now(),
+      }));
+    } catch (_) {}
+  };
+
+  const backToList = () => {
+    if (!location.href.includes('CloudSquare')) {
+      location.href = SCHOOL_URL_VALUE;
+    }
+  };
+
+  const restorePanel = () => {
+    let saved = null, result = null;
+    try { saved = JSON.parse(sessionStorage.getItem(RESTORE_KEY) || 'null'); } catch (_) {}
+    try { result = JSON.parse(sessionStorage.getItem(RESULT_KEY) || 'null'); } catch (_) {}
+    sessionStorage.removeItem(RESULT_KEY);
+    if (!saved || !Array.isArray(saved.rows) || !saved.rows.length) return false;
+    allActivities = saved.rows;
+    show(saved.rows);
+    if (saved.keyword) {
+      const box = document.querySelector('#gdipu-search');
+      if (box) { box.value = saved.keyword; box.dispatchEvent(new Event('input', { bubbles: true })); }
+    }
+    if (result) showBanner(result);
+    return true;
+  };
+
+  const showBanner = result => {
+    const head = document.querySelector('#gdipu-assist-results .head');
+    if (!head) { status(result.message); return; }
+    const old = head.querySelector('.result-banner');
+    if (old) old.remove();
+    const banner = document.createElement('div');
+    banner.className = 'result-banner';
+    banner.style.cssText = `margin:10px 0;padding:10px 12px;border-radius:8px;font-weight:bold;background:${result.ok === false ? '#ffe1e1' : '#d9f5ea'};color:${result.ok === false ? '#8a1c1c' : '#0d5c43'}`;
+    banner.textContent = result.message;
+    head.appendChild(banner);
+    status(result.message);
+  };
+
   const prepare = async row => {
     const account = accountInput.value.trim();
     if (!account) { status('请先填写账号标识。'); accountInput.focus(); return; }
     localStorage.setItem(accountKey, account);
     sessionStorage.setItem(pendingKey, JSON.stringify({account, row, startedAt:Date.now()}));
+    // 不清零的话,一旦失败过一次(计数到 30),之后每次帮抢都会在
+    // 第一次检查时立即放弃,而且几乎看不到提示。
+    pendingAttempts = 0;
+    rememberPanel();
     status(`正在读取“${row.title}”的报名开始时间…`);
     document.getElementById('gdipu-assist-results').style.display = 'none';
     if (!await openActivity(row)) {
-      sessionStorage.removeItem(pendingKey); status('找不到活动入口，未建立任务。'); return;
+      sessionStorage.removeItem(pendingKey);
+      sessionStorage.setItem(RESULT_KEY, JSON.stringify({ok:false, message:`找不到活动入口:${row.title}`}));
+      restorePanel();
+      status('找不到活动入口,未建立任务。');
+      return;
     }
     setTimeout(resumePending, 400);
   };
@@ -480,6 +541,15 @@
   };
 
   let pendingAttempts = 0;
+  const finishPending = (ok, message) => {
+    sessionStorage.removeItem(pendingKey);
+    sessionStorage.setItem(RESULT_KEY, JSON.stringify({ok, message}));
+    status(message);
+    if (ok) refreshTasks();
+    // 详情页读完就跳回列表,面板由 restorePanel 恢复并显示结果横幅。
+    backToList();
+  };
+
   const resumePending = async () => {
     const raw = sessionStorage.getItem(pendingKey);
     if (!raw) return;
@@ -490,10 +560,12 @@
     if (!text.includes(pending.row.title) || !parsed) {
       pendingAttempts += 1;
       if (pendingAttempts < 30) { setTimeout(resumePending, 400); return; }
-      sessionStorage.removeItem(pendingKey); status('未能读取报名时间，未建立帮抢任务。'); return;
+      finishPending(false, `未能读取“${pending.row.title}”的报名时间,未建立任务。`);
+      return;
     }
     if (parsed.date.getTime() <= Date.now()) {
-      sessionStorage.removeItem(pendingKey); status('该活动的报名开始时间已经过去，未建立任务。'); return;
+      finishPending(false, `“${pending.row.title}”的报名时间( ${parsed.range} )已经过去,未建立任务。`);
+      return;
     }
     try {
       const result = await window.pywebview.api.schedule_task({
@@ -503,8 +575,11 @@
         runAt: parsed.date.toISOString(),
         targetUrl: currentTargetUrl(pending.row.title)
       });
-      sessionStorage.removeItem(pendingKey); status(result.message || '任务处理完成。'); refreshTasks();
-    } catch (error) { status(`建立任务失败：${error}`); }
+      const when = parsed.date.toLocaleString();
+      finishPending(true, `已预约:${pending.row.title} —— 将于 ${when} 点击报名(来源:${parsed.source || '详情页'})。`);
+    } catch (error) {
+      finishPending(false, `建立任务失败:${error}`);
+    }
   };
 
   const refreshTasks = async () => {
@@ -539,6 +614,8 @@
   };
   window.addEventListener('pywebviewready', () => { resumePending(); refreshTasks(); });
   setTimeout(resumePending, 500);
+  // 帮抢读完详情跳回列表后,把面板和结果横幅恢复出来。
+  setTimeout(restorePanel, 1200);
   setInterval(refreshTasks, 3000);
 })();
 
