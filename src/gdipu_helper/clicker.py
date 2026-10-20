@@ -226,39 +226,75 @@ class SignupClicker:
 
     @staticmethod
     def _available_button(frame: Frame) -> Locator | None:
-        candidates = frame.locator("a,button,[role='button']").filter(has_text=BUTTON_TEXT)
+        """找可点的报名入口。
+
+        实测(2026-10-20):报名入口是
+            <div class="action-apply clickable apply-status7">立即报名</div>
+        是 <div>,不是 <button> 也不是 <a>。旧代码只查
+        a,button,[role='button'],所以永远找不到,一直报 button_unavailable。
+        现在把带 apply/action/btn/button/link 类名的容器也纳入,
+        并且 <div> 没有 is_enabled 概念,改用 cursor 和 disabled 类名判断。
+        """
+        candidates = frame.locator(
+            "a,button,[role='button'],.el-button,"
+            "[class*='apply'],[class*='action'],[class*='btn'],"
+            "[class*='button'],[class*='link']"
+        )
         try:
-            for index in range(min(candidates.count(), 20)):
-                candidate = candidates.nth(index)
-                text = (candidate.inner_text(timeout=500) or "").strip()
-                classes = candidate.get_attribute("class", timeout=500) or ""
-                if (
-                    BUTTON_TEXT.fullmatch(text)
-                    and candidate.is_visible(timeout=500)
-                    and candidate.is_enabled(timeout=500)
-                    and candidate.get_attribute("aria-disabled", timeout=500) != "true"
-                    and "disabled" not in classes.casefold()
-                ):
-                    return candidate
+            total = min(candidates.count(), 40)
         except Exception:
             return None
+        for index in range(total):
+            candidate = candidates.nth(index)
+            try:
+                text = (candidate.inner_text(timeout=500) or "").strip()
+                if not BUTTON_TEXT.fullmatch(text):
+                    continue
+                if not candidate.is_visible(timeout=500):
+                    continue
+                classes = (candidate.get_attribute("class", timeout=500) or "").casefold()
+                if "disabled" in classes:
+                    continue
+                if candidate.get_attribute("aria-disabled", timeout=500) == "true":
+                    continue
+                if candidate.get_attribute("disabled", timeout=500) is not None:
+                    continue
+                cursor = candidate.evaluate("el => getComputedStyle(el).cursor")
+                if cursor in ("not-allowed", "default", "inherit"):
+                    # div 靠 cursor:pointer 表明可点;真 button/a 用默认样式也算可点
+                    tag = candidate.evaluate("el => el.tagName.toLowerCase()")
+                    if tag not in ("a", "button"):
+                        continue
+                return candidate
+            except Exception:
+                continue
         return None
 
     # ── 点击后验证 ─────────────────────────────────────────────
     @staticmethod
     def _click_took_effect(page: Page, seconds: float) -> bool:
-        """看两个信号：出现成功措辞，或者报名按钮消失。"""
+        """判断这次点击是否真的生效。
+
+        不能用 SUCCESS_MARKERS 里的「已报名」:详情页本来就写着
+        「39人已报名/不限」,点击前就已经命中,于是无论点没点中都会判成功
+        —— 这正是"说执行了但没抢到"的来源。
+
+        可靠信号只有「立即报名」这个按钮本身发生变化:文案变成
+        取消报名/已报名,或者按钮整个消失。用按钮状态比对,
+        而不是在整页文字里找关键词。
+        """
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             for frame in page.frames:
                 try:
+                    still_there = SignupClicker._available_button(frame)
+                    if still_there is not None:
+                        continue  # 「立即报名」还在,说明没生效
                     text = frame.locator("body").inner_text(timeout=500) or ""
+                    # 按钮没了,再看是不是转成了已报名的措辞
+                    if re.search(r"取消报名|已报名成功|报名成功|你已报名", text):
+                        return True
                 except Exception:
                     continue
-                if SUCCESS_MARKERS.search(text):
-                    return True
-                if SignupClicker._available_button(frame) is None and BUTTON_TEXT.search(text):
-                    # 页面上还有"报名"字样但已经找不到可点的按钮 → 可能已进入下一步
-                    return True
-            time.sleep(0.1)
+            time.sleep(0.2)
         return False
