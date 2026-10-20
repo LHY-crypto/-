@@ -27,6 +27,11 @@ PAGE_MARKERS = re.compile(
 # 点击后页面可能出现的成功标记。命中即认为这次点击生效。
 SUCCESS_MARKERS = re.compile(r"已报名|报名成功|已参加|取消报名|已预约")
 
+# 登录态失效时会被重定向到统一身份认证。必须单独识别,
+# 否则只会报 wrong_activity,让人以为页面不对,实际是没登录。
+LOGIN_MARKERS = re.compile(r"统一身份认证|账号登录|扫码登录|忘记密码")
+LOGIN_URL = re.compile(r"/login\b|service=|oauth|sso", re.IGNORECASE)
+
 MAX_ATTEMPTS = 3          # 上界:最多点 3 次
 RETRY_DELAY_SECONDS = 2.0  # 两次尝试之间等待
 
@@ -49,17 +54,37 @@ class SignupClicker:
         self.wait_seconds = wait_seconds
 
     def run(self, *, title: str, target_url: str) -> ClickResult:
+        """在独立标签页里完成一次点击。
+
+        必须用独立标签页:两个任务同时到点时,调度器是线程池,会真并发;
+        如果都复用主窗口那一页,一个在 goto、另一个在检查标题,就会互相打断
+        —— 实测 2026-10-20 08:35 两个任务同时执行,一个报
+        net::ERR_ABORTED,另一个报 wrong_activity,两个都没点成。
+        同浏览器上下文共享登录态,所以新标签页不需要重新登录。
+        """
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(self.cdp_url, timeout=8_000)
+            page = None
             try:
-                page = self._school_page(browser)
-                if page is None:
-                    return ClickResult("no_page", "未找到学校活动页面，未执行点击。")
-                if not self._contains_title(page, title):
-                    if self._allowed_url(target_url):
-                        page.goto(target_url, wait_until="domcontentloaded", timeout=12_000)
-                    if not self._wait_for_title(page, title, 8.0):
-                        return ClickResult("wrong_activity", "当前页面不是已预约活动，未执行点击。")
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.new_page()
+                if self._allowed_url(target_url):
+                    try:
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=15_000)
+                    except Exception:
+                        pass  # SPA 中途重定向也会抛，交给下面的标题判断
+                if self._is_login_page(page):
+                    return ClickResult(
+                        "login_expired",
+                        "登录已失效，页面被重定向到统一身份认证。请在程序里重新登录后再建任务。",
+                    )
+                if not self._wait_for_title(page, title, 10.0):
+                    if self._is_login_page(page):
+                        return ClickResult(
+                            "login_expired",
+                            "登录已失效，页面被重定向到统一身份认证。请在程序里重新登录后再建任务。",
+                        )
+                    return ClickResult("wrong_activity", "详情页 10 秒内没有出现目标活动，未执行点击。")
 
                 last = ClickResult("not_attempted", "没有任何一次尝试。")
                 clicks_sent = 0
@@ -107,6 +132,11 @@ class SignupClicker:
 
                 return last
             finally:
+                if page is not None:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
                 browser.close()
 
     # ── 页面识别 ───────────────────────────────────────────────
@@ -128,6 +158,27 @@ class SignupClicker:
             return urlparse(url).scheme == "https" and urlparse(url).hostname == ALLOWED_HOST
         except ValueError:
             return False
+
+    @staticmethod
+    def _is_login_page(page: Page) -> bool:
+        """是否被重定向到了统一身份认证。
+
+        登录过期时学校会把任何页面踢到 /login?service=...,此时详情页没有活动标题,
+        旧代码只会报 wrong_activity,让人以为页面选错了。必须单独识别。
+        """
+        try:
+            if LOGIN_URL.search(page.url or ""):
+                return True
+        except Exception:
+            pass
+        for frame in page.frames:
+            try:
+                text = frame.locator("body").inner_text(timeout=800) or ""
+            except Exception:
+                continue
+            if LOGIN_MARKERS.search(text):
+                return True
+        return False
 
     @staticmethod
     def _contains_title(page: Page, title: str) -> bool:

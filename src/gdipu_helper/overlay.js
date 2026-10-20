@@ -589,8 +589,14 @@
       const response = await window.pywebview.api.list_tasks(account);
       const holder = document.getElementById('gdipu-task-list');
       if (!response.ok || !response.tasks.length) { holder.textContent = '暂无记录。'; return; }
-      const labels = {scheduled:'待执行', claimed:'执行中', attempted:'已执行一次', cancelled:'已取消', unknown:'状态未知'};
-      holder.innerHTML = response.tasks.slice(0,8).map(task => `<div class="task"><strong>${escapeHtml(task.title)}</strong><br>${escapeHtml(labels[task.state] || task.state)} · ${escapeHtml(new Date(task.run_at).toLocaleString())}${task.state === 'scheduled' ? `<br><button class="cancel-task" data-id="${escapeHtml(task.activity_id)}">取消任务</button>` : ''}</div>`).join('');
+      const labels = {scheduled:'待执行', claimed:'执行中', attempted:'已执行', cancelled:'已取消', unknown:'状态未知'};
+      holder.innerHTML = response.tasks.slice(0,8).map(task => {
+        const state = labels[task.state] || task.state;
+        const detail = task.result ? `<div class="tiny" style="color:#ffd7a8;margin-top:3px">${escapeHtml(String(task.result).split('\n')[0].slice(0, 110))}</div>` : '';
+        const cancel = task.state === 'scheduled'
+          ? `<br><button class="cancel-task" data-id="${escapeHtml(task.activity_id)}">取消任务</button>` : '';
+        return `<div class="task"><strong>${escapeHtml(task.title)}</strong><br>${escapeHtml(state)} · ${escapeHtml(new Date(task.run_at).toLocaleString())}${cancel}${detail}</div>`;
+      }).join('');
       holder.querySelectorAll('.cancel-task').forEach(button => button.onclick = async () => {
         const result = await window.pywebview.api.cancel_task(account, button.dataset.id);
         status(result.message || '任务已处理。'); refreshTasks();
