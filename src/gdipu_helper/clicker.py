@@ -8,7 +8,13 @@ from urllib.parse import urlparse
 from playwright.sync_api import Browser, Frame, Locator, Page, sync_playwright
 
 ALLOWED_HOST = "study.gdipu.edu.cn"
-BUTTON_TEXT = re.compile(r"^\s*(报名|立即报名)\s*$")
+# 报名入口的文案随状态变化,实测见过:
+#   立即报名     (交互242班,报名开放)
+#   报名中       (新生"阅读启航计划"读书分享会第一期 —— 手机端截图,报名开放)
+#   报名已截止    (apply-status2,不可点,靠 cursor 过滤掉)
+# 旧正则只认「报名」和「立即报名」,所以「报名中」永远匹配不到 —— 这就是
+# "页面明明有报名按钮,工具说没有"的直接原因。
+BUTTON_TEXT = re.compile(r"^\s*(报名|立即报名|报名中|我要报名|报名参加)\s*$")
 
 # 这个页面是「到点才放按钮」的形态。实测(2026-10-19)详情页原文是:
 #     敬请期待
