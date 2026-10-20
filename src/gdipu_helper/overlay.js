@@ -289,39 +289,44 @@
 
   // 卡片不一定在当前页,甚至不在当前筛选组合下:
   // 列表会随新活动插入而整体后移,全量扫描出来的行还可能来自别的筛选。
-  // 所以先在当前页找,再逐页找,最后切回它当初出现的筛选组合再找一次。
-  const openActivity = async row => {
-    let card = findCardOnCurrentPage(row);
-    if (card) { clickCard(card); await wait(600); return true; }
-
+  // 查找顺序:当前页 → 当前筛选逐页 → 它当初出现的组合 → 所有组合兜底。
+  const seekOnPages = async row => {
     const pages = Math.min(pagerCount(), 12);
     for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
       const btn = pageButton(pageNumber);
       if (!btn) continue;
       if (!/is-active|active/.test(btn.className || '')) {
-        btn.click(); await wait(1200);
+        btn.click(); await wait(900);
       }
-      card = findCardOnCurrentPage(row);
+      const card = findCardOnCurrentPage(row);
       if (card) { clickCard(card); await wait(600); return true; }
     }
+    return false;
+  };
+
+  const openActivity = async row => {
+    const here = findCardOnCurrentPage(row);
+    if (here) { clickCard(here); await wait(600); return true; }
+
+    if (await seekOnPages(row)) return true;
 
     if (row.firstSeenAs) {
       const [type, state] = row.firstSeenAs.split('/');
       if (type && state) {
         await clickTab(type);
         await clickTab(state);
-        for (let pageNumber = 1; pageNumber <= Math.min(pagerCount(), 12); pageNumber += 1) {
-          const btn = pageButton(pageNumber);
-          if (!btn) continue;
-          if (!/is-active|active/.test(btn.className || '')) {
-            btn.click(); await wait(1200);
-          }
-          card = findCardOnCurrentPage(row);
-          if (card) { clickCard(card); await wait(600); return true; }
-        }
+        if (await seekOnPages(row)) return true;
       }
     }
 
+    // 兜底:活动可能在读取之后换了状态(未开始 → 进行中),逐个组合找一遍。
+    for (const type of TYPES) {
+      for (const state of STATES) {
+        await clickTab(type);
+        await clickTab(state);
+        if (await seekOnPages(row)) return true;
+      }
+    }
     return false;
   };
 
